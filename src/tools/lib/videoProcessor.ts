@@ -27,18 +27,20 @@ export function isExportSupported(): boolean {
 }
 
 /**
- * 就地执行边界驱动的扩散修复（inpaint）。
+ * 就地执行「最近边界像素」扩散修复（inpaint）。
  *
- * 策略：以修复矩形为中心，向外扩展一圈「上下文环」（包含水印四周的真实画面），
- * 环内像素作为源；随后从外环向内用「邻域均值」逐层扩散，用水印四周的画面内容
- * 自然填充水印区域。复杂度约为 O(扩展面积)，性能可控。
+ * 思路：以修复矩形为中心向外扩展一环「上下文」，然后把矩形内每个像素
+ * 用其四周、距最近的真实画面像素颜色覆盖（由外向内逐圈传播）。相比逐圈
+ * 均值，最近像素传播能保留画面纹理与色彩，不会把区域平均成灰块或产生
+ * 重复拖影，更适合视频逐帧水印修补。
+ *
+ * 复杂度约 O(扩展面积)，逐帧调用可接受。
  */
 function inpaintRegion(
   ctx: CanvasRenderingContext2D,
   rect: Region,
   outputW: number,
   outputH: number,
-  _iterations = 10,
 ): void {
   // 内层待修复矩形
   const ix0 = Math.max(0, Math.floor(rect.x));
@@ -47,8 +49,8 @@ function inpaintRegion(
   const iy1 = Math.min(outputH, Math.ceil(rect.y + rect.h));
   if (ix1 <= ix0 || iy1 <= iy0) return;
 
-  // 外层扩展上下文环（向内缩进同样语义：扩展边距 = 修复宽高的 1/3，至少 8px）
-  const margin = Math.max(8, Math.round(Math.min(rect.w, rect.h) / 3));
+  // 外层扩展一圈上下文环（边距 = 修复宽高的 1/4，最小 4px，避免过度扩散）
+  const margin = Math.max(4, Math.round(Math.min(rect.w, rect.h) / 4));
   const ox0 = Math.max(0, ix0 - margin);
   const oy0 = Math.max(0, iy0 - margin);
   const ox1 = Math.min(outputW, ix1 + margin);
@@ -56,35 +58,48 @@ function inpaintRegion(
   const ow = ox1 - ox0;
   const oh = oy1 - oy0;
 
-  // 采外层（含上下文环）像素并写入工作缓冲
+  // 整数索引
+  let x0i = ix0 - ox0;
+  let y0i = iy0 - oy0;
+  let x1i = ix1 - ox0;
+  let y1i = iy1 - oy0;
+  if (x0i < 0) x0i = 0;
+  if (y0i < 0) y0i = 0;
+  if (x1i > ow) x1i = ow;
+  if (y1i > oh) y1i = oh;
+
   const imgData = ctx.getImageData(ox0, oy0, ow, oh);
   const data = imgData.data;
-  const idx = (x: number, y: number) => (y * ow + x) * 4;
 
-  // 标记哪些像素待修复（true=待修复，位于内层矩形内）
+  // mask：待修复像素（位于内层矩形内）
   const mask = new Uint8Array(ow * oh);
-  for (let y = 0; y < oh; y++) {
-    for (let x = 0; x < ow; x++) {
-      const vx = ox0 + x;
-      const vy = oy0 + y;
-      if (vx >= ix0 && vx < ix1 && vy >= iy0 && vy < iy1) mask[y * ow + x] = 1;
+  for (let y = y0i; y < y1i; y++) {
+    for (let x = x0i; x < x1i; x++) {
+      mask[y * ow + x] = 1;
     }
   }
 
-  // 由外向内逐圈扩散：每一轮让待修复像素取「相邻已完成像素」的均值
-  // 用到边界的距离分层，保证外圈先被修复
-  const totalRounds = Math.max(ix1 - ix0, iy1 - iy0) + margin;
-  for (let round = 0; round < totalRounds; round++) {
-    const snapshot = new Uint8ClampedArray(data);
+  // 每个像素到边框的距离（用于由外向内分层）——取到四邻的切比雪夫距离
+  const dist = (x: number, y: number) =>
+    Math.min(
+      x - x0i + 1,
+      x1i - x,
+      y - y0i + 1,
+      y1i - y,
+    );
+
+  const maxLayer = Math.max(x1i - x0i, y1i - y0i);
+  for (let layer = 1; layer <= maxLayer; layer++) {
+    // 采样本层开始时 data 值
+    const snap = new Uint8ClampedArray(data);
     let touched = false;
-    for (let y = 0; y < oh; y++) {
-      for (let x = 0; x < ow; x++) {
+    for (let y = y0i; y < y1i; y++) {
+      for (let x = x0i; x < x1i; x++) {
         const p = y * ow + x;
-        if (!mask[p]) continue; // 只处理待修复像素
-        let s0 = 0;
-        let s1 = 0;
-        let s2 = 0;
-        let cnt = 0;
+        if (!mask[p] || dist(x, y) !== layer) continue;
+        // 从 4 邻域选「已完成（mask=0）」像素作为源：
+        //  - 上下文环（矩形外，天然 mask=0）直接可用
+        //  - 矩形内更外层的已修复像素也可用
         const around: Array<[number, number]> = [
           [x - 1, y],
           [x + 1, y],
@@ -92,26 +107,21 @@ function inpaintRegion(
           [x, y + 1],
         ];
         for (const [ax, ay] of around) {
-          if (ax < 0 || ay < 0 || ax >= ow || ay >= oh) continue;
-          // 源：已完成的像素（非当前待修复像素）
-          if (!mask[ay * ow + ax]) {
-            const sp = idx(ax, ay);
-            s0 += snapshot[sp];
-            s1 += snapshot[sp + 1];
-            s2 += snapshot[sp + 2];
-            cnt++;
-          }
-        }
-        if (cnt > 0) {
-          data[p] = s0 / cnt;
-          data[p + 1] = s1 / cnt;
-          data[p + 2] = s2 / cnt;
-          mask[p] = 0; // 本轮已填充，标记为完成
+          if (ax < 0 || ax >= ow || ay < 0 || ay >= oh) continue;
+          const ap = ay * ow + ax;
+          if (mask[ap]) continue; // 仍需修复，跳过
+          // 若源在矩形内，必须是更外层（距离更小），避免同层互相污染
+          const inRect = ax >= x0i && ax < x1i && ay >= y0i && ay < y1i;
+          if (inRect && dist(ax, ay) >= layer) continue;
+          data[p] = snap[ap];
+          data[p + 1] = snap[ap + 1];
+          data[p + 2] = snap[ap + 2];
+          mask[p] = 0;
           touched = true;
+          break;
         }
       }
     }
-    // 当前轮没有任何像素可填充（四周不再有已完成像素），扩散结束
     if (!touched) break;
   }
 
@@ -122,6 +132,8 @@ export interface ProcessResult {
   blob: Blob | null;
   url: string;
   format: string;
+  /** 输出文件扩展名（.mp4 或 .webm） */
+  ext: string;
   duration: number;
 }
 
@@ -142,7 +154,7 @@ export interface ProcessOptions {
  */
 export function processVideo(options: ProcessOptions): Promise<ProcessResult> {
   return new Promise<ProcessResult>((resolve, reject) => {
-    const { video, originalDuration, region, iterations = 12, onProgress, signal, mimeType } = options;
+    const { video, originalDuration, region, onProgress, signal, mimeType } = options;
 
     // 目标输出尺寸：保持源分辨率
     const outputW = video.videoWidth;
@@ -166,13 +178,14 @@ export function processVideo(options: ProcessOptions): Promise<ProcessResult> {
       h: region.h * outputH,
     };
 
-    // 选择录制类型
-    const candidates = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'];
+    // 选择录制类型：优先 mp4（iOS/Safari 支持），Android/Chrome 回退 webm
+    const candidates = ['video/mp4;codecs=avc1.42E01E', 'video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
     const chosen = mimeType && MediaRecorder.isTypeSupported(mimeType) ? mimeType : candidates.find(t => MediaRecorder.isTypeSupported(t));
     if (!chosen) {
       reject(new Error('当前浏览器不支持视频录制导出'));
       return;
     }
+    const ext = chosen.startsWith('video/mp4') ? '.mp4' : '.webm';
 
     const stream = canvas.captureStream(24);
     // 尝试把源视频音频混入，若无法则静音导出
@@ -202,7 +215,7 @@ export function processVideo(options: ProcessOptions): Promise<ProcessResult> {
       const blob = new Blob(chunks, { type: chosen });
       const url = URL.createObjectURL(blob);
       cleanup();
-      resolve({ blob, url, format: chosen, duration: originalDuration });
+      resolve({ blob, url, format: chosen, ext, duration: originalDuration });
     };
 
     recorder.onerror = () => {
@@ -217,7 +230,7 @@ export function processVideo(options: ProcessOptions): Promise<ProcessResult> {
         return;
       }
       ctx.drawImage(video, 0, 0, outputW, outputH);
-      inpaintRegion(ctx, rect, outputW, outputH, iterations);
+      inpaintRegion(ctx, rect, outputW, outputH);
       const t = video.currentTime;
       const progress = originalDuration > 0 ? Math.min(1, t / originalDuration) : 0;
       onProgress?.({ progress, currentTime: t, duration: originalDuration });

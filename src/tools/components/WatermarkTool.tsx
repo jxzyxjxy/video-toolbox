@@ -93,18 +93,27 @@ export function WatermarkTool() {
     setStep('idle');
   }, [result, video]);
 
-  // 下载处理结果
-  const download = useCallback(() => {
+  // 下载处理结果：用 fetch + blob 方式，确保移动端真正保存文件而非新开播放
+  const download = useCallback(async () => {
     if (!result?.url) return;
-    const a = document.createElement('a');
-    const base = 'VidPop-去水印';
-    const ext = result.format.includes('mp4') ? '.mp4' : '.webm';
-    a.href = result.url;
-    a.download = `${base}-${Date.now()}${ext}`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  }, [result]);
+    try {
+      const res = await fetch(result.url);
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const base = 'VidPop-去水印';
+      const ext = result.ext || (result.format.includes('mp4') ? '.mp4' : '.webm');
+      a.href = blobUrl;
+      a.download = `${base}-${Date.now()}${ext}`;
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 4000);
+    } catch {
+      setError('下载失败，请重试');
+    }
+  }, [result, setError]);
 
   return (
     <div className="relative">
