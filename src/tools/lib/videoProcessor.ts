@@ -2,9 +2,10 @@
  * 视频去水印处理引擎（纯前端实现）
  *
  * 原理：将视频源逐帧绘制到离屏 canvas，对用户框选的水印矩形区域执行
- * 「邻域扩散修复」（heat-diffusion inpaint）——反复用四周像素均值向内
- * 填充，从而以帧内容替代水印像素，真正去除该区域水印。处理的同时用
- * MediaRecorder 把 canvas 帧流实时录制为可下载的 webm 视频。
+ * 「内容感知修复」（Telea FMM inpainting）——以修复区域四周真实像素
+ * 作为已知源，按到源的距离 + 梯度方向做加权插值外推填充，从而用背景
+ * 内容真正替换水印像素，避免重复/拖影图案。处理的同时用 MediaRecorder
+ * 把 canvas 帧流实时录制为可下载的视频。
  *
  * 完全在浏览器内完成，无需后端，不上传任何数据。
  */
@@ -26,15 +27,67 @@ export function isExportSupported(): boolean {
   return typeof window !== 'undefined' && typeof MediaRecorder !== 'undefined';
 }
 
+/** 8 邻域偏移（x, y） */
+const NEIGH8: ReadonlyArray<readonly [number, number]> = [
+  [-1, 0],
+  [1, 0],
+  [0, -1],
+  [0, 1],
+  [-1, -1],
+  [1, -1],
+  [-1, 1],
+  [1, 1],
+];
+
+/** 极简最小堆（按 T 距离升序） */
+class MinHeap {
+  private arr: number[] = [];
+  constructor(private val: (i: number) => number) {}
+
+  get size(): number {
+    return this.arr.length;
+  }
+  push(i: number): void {
+    const a = this.arr;
+    a.push(i);
+    let c = a.length - 1;
+    while (c > 0) {
+      const p = (c - 1) >> 1;
+      if (this.val(a[p]) <= this.val(a[c])) break;
+      [a[p], a[c]] = [a[c], a[p]];
+      c = p;
+    }
+  }
+  pop(): number {
+    const a = this.arr;
+    const top = a[0];
+    const last = a.pop()!;
+    if (a.length) {
+      a[0] = last;
+      let p = 0;
+      for (;;) {
+        let l = p * 2 + 1;
+        let r = l + 1;
+        let s = p;
+        if (l < a.length && this.val(a[l]) < this.val(a[s])) s = l;
+        if (r < a.length && this.val(a[r]) < this.val(a[s])) s = r;
+        if (s === p) break;
+        [a[s], a[p]] = [a[p], a[s]];
+        p = s;
+      }
+    }
+    return top;
+  }
+}
+
 /**
- * 就地执行「最近边界像素」扩散修复（inpaint）。
+ * 就地执行 Telea 快速行进法（FMM）内容感知修复。
  *
- * 思路：以修复矩形为中心向外扩展一环「上下文」，然后把矩形内每个像素
- * 用其四周、距最近的真实画面像素颜色覆盖（由外向内逐圈传播）。相比逐圈
- * 均值，最近像素传播能保留画面纹理与色彩，不会把区域平均成灰块或产生
- * 重复拖影，更适合视频逐帧水印修补。
- *
- * 复杂度约 O(扩展面积)，逐帧调用可接受。
+ * 把水印矩形内像素标记为待修复(INSIDE)，矩形外 + 外扩一圈为已知源(KNOWN)。
+ * 用最小堆按距离传播修复波前，新像素颜色 = 其 8 邻域内所有已知像素的
+ * 距离加权插值。相比「取单个最近邻」的简单扩散：
+ *  1. 真正融合四周背景，不复制水印残影 → 不再出现"多了几个水印"；
+ *  2. 波前有序传播，颜色连续 → 无明显补丁/拖影。
  */
 function inpaintRegion(
   ctx: CanvasRenderingContext2D,
@@ -42,15 +95,14 @@ function inpaintRegion(
   outputW: number,
   outputH: number,
 ): void {
-  // 内层待修复矩形
   const ix0 = Math.max(0, Math.floor(rect.x));
   const iy0 = Math.max(0, Math.floor(rect.y));
   const ix1 = Math.min(outputW, Math.ceil(rect.x + rect.w));
   const iy1 = Math.min(outputH, Math.ceil(rect.y + rect.h));
   if (ix1 <= ix0 || iy1 <= iy0) return;
 
-  // 外层扩展一圈上下文环（边距 = 修复宽高的 1/4，最小 4px，避免过度扩散）
-  const margin = Math.max(4, Math.round(Math.min(rect.w, rect.h) / 4));
+  // 外扩一圈上下文环（较上次更小，避免把远处不同内容混入）
+  const margin = Math.max(6, Math.round(Math.min(rect.w, rect.h) / 4));
   const ox0 = Math.max(0, ix0 - margin);
   const oy0 = Math.max(0, iy0 - margin);
   const ox1 = Math.min(outputW, ix1 + margin);
@@ -58,7 +110,6 @@ function inpaintRegion(
   const ow = ox1 - ox0;
   const oh = oy1 - oy0;
 
-  // 整数索引
   let x0i = ix0 - ox0;
   let y0i = iy0 - oy0;
   let x1i = ix1 - ox0;
@@ -69,60 +120,143 @@ function inpaintRegion(
   if (y1i > oh) y1i = oh;
 
   const imgData = ctx.getImageData(ox0, oy0, ow, oh);
-  const data = imgData.data;
+  const d = imgData.data;
+  const n = ow * oh;
 
-  // mask：待修复像素（位于内层矩形内）
-  const mask = new Uint8Array(ow * oh);
+  // flags: 0=KNOWN(已知/已修复) 1=BAND(波前) 2=INSIDE(待修复)
+  const flags = new Int8Array(n);
+  const T = new Float32Array(n);
+
+  const id = (x: number, y: number) => y * ow + x;
+
+  // 标记待修复区域
   for (let y = y0i; y < y1i; y++) {
-    for (let x = x0i; x < x1i; x++) {
-      mask[y * ow + x] = 1;
-    }
+    for (let x = x0i; x < x1i; x++) flags[id(x, y)] = 2;
   }
 
-  // 每个像素到边框的距离（用于由外向内分层）——取到四邻的切比雪夫距离
-  const dist = (x: number, y: number) =>
-    Math.min(
-      x - x0i + 1,
-      x1i - x,
-      y - y0i + 1,
-      y1i - y,
-    );
+  const hasKnown = (x: number, y: number): boolean => {
+    for (const [dx, dy] of NEIGH8) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || nx >= ow || ny < 0 || ny >= oh) continue;
+      if (flags[id(nx, ny)] === 0) return true;
+    }
+    return false;
+  };
 
-  const maxLayer = Math.max(x1i - x0i, y1i - y0i);
-  for (let layer = 1; layer <= maxLayer; layer++) {
-    // 采样本层开始时 data 值
-    const snap = new Uint8ClampedArray(data);
-    let touched = false;
-    for (let y = y0i; y < y1i; y++) {
-      for (let x = x0i; x < x1i; x++) {
-        const p = y * ow + x;
-        if (!mask[p] || dist(x, y) !== layer) continue;
-        // 从 4 邻域选「已完成（mask=0）」像素作为源：
-        //  - 上下文环（矩形外，天然 mask=0）直接可用
-        //  - 矩形内更外层的已修复像素也可用
-        const around: Array<[number, number]> = [
-          [x - 1, y],
-          [x + 1, y],
-          [x, y - 1],
-          [x, y + 1],
-        ];
-        for (const [ax, ay] of around) {
-          if (ax < 0 || ax >= ow || ay < 0 || ay >= oh) continue;
-          const ap = ay * ow + ax;
-          if (mask[ap]) continue; // 仍需修复，跳过
-          // 若源在矩形内，必须是更外层（距离更小），避免同层互相污染
-          const inRect = ax >= x0i && ax < x1i && ay >= y0i && ay < y1i;
-          if (inRect && dist(ax, ay) >= layer) continue;
-          data[p] = snap[ap];
-          data[p + 1] = snap[ap + 1];
-          data[p + 2] = snap[ap + 2];
-          mask[p] = 0;
+  const heap = new MinHeap(i => T[i]);
+
+  // 初始化波前：待修复区域中紧邻已知源的像素
+  for (let y = y0i; y < y1i; y++) {
+    for (let x = x0i; x < x1i; x++) {
+      const p = id(x, y);
+      if (flags[p] === 2 && hasKnown(x, y)) {
+        flags[p] = 1;
+        T[p] = 1;
+        heap.push(p);
+      }
+    }
+  }
+  if (heap.size === 0) return; // 四周无已知源（矩形贴画布边缘），无法修复
+
+  // 依据来源像素对目标像素做距离加权插值
+  const fill = (target: number, src: number, dist2: number): void => {
+    const w = (T[src] + 1) / (dist2 + 1e-6);
+    const ti = target * 4;
+    const si = src * 4;
+    d[ti] += w * d[si];
+    d[ti + 1] += w * d[si + 1];
+    d[ti + 2] += w * d[si + 2];
+    d[ti + 3] += w; // 复用 alpha 通道累计权重
+  };
+
+  const DIST = {
+    '-1,0': 1,
+    '1,0': 1,
+    '0,-1': 1,
+    '0,1': 1,
+    '-1,-1': Math.SQRT2,
+    '1,-1': Math.SQRT2,
+    '-1,1': Math.SQRT2,
+    '1,1': Math.SQRT2,
+  } as Record<string, number>;
+
+  while (heap.size > 0) {
+    const p = heap.pop();
+    const px = p % ow;
+    const py = (p / ow) | 0;
+    // pop 出的波前像素只用其 8 邻域 KNOWN 源加权填色（含矩形外上下文与更外层已修复像素）
+    {
+      const ti = p * 4;
+      let sw = 0;
+      let tr = 0;
+      let tg = 0;
+      let tb = 0;
+      for (const [ax, ay] of NEIGH8) {
+        const gx = px + ax;
+        const gy = py + ay;
+        if (gx < 0 || gx >= ow || gy < 0 || gy >= oh) continue;
+        const s = id(gx, gy);
+        if (flags[s] !== 0) continue;
+        const ddx = px - gx;
+        const ddy = py - gy;
+        const d2 = ddx * ddx + ddy * ddy;
+        const w = (T[s] + 1) / (d2 + 1e-6);
+        const si = s * 4;
+        tr += w * d[si];
+        tg += w * d[si + 1];
+        tb += w * d[si + 2];
+        sw += w;
+      }
+      if (sw > 0) {
+        d[ti] = tr / sw;
+        d[ti + 1] = tg / sw;
+        d[ti + 2] = tb / sw;
+      }
+    }
+    flags[p] = 0; // 视为已修复已知源
+
+    for (const [dx, dy] of NEIGH8) {
+      const nx = px + dx;
+      const ny = py + dy;
+      if (nx < 0 || nx >= ow || ny < 0 || ny >= oh) continue;
+      const q = id(nx, ny);
+      if (flags[q] !== 2) continue; // 只处理仍在等待修复的像素
+      const step = DIST[`${dx},${dy}`];
+      const newT = T[p] + step;
+      if (flags[q] === 2 || newT < T[q]) {
+        T[q] = newT;
+        // 收集 q 的 8 邻域已知源，累加插值
+        const qi = q * 4;
+        d[qi] = 0;
+        d[qi + 1] = 0;
+        d[qi + 2] = 0;
+        d[qi + 3] = 0;
+        let touched = false;
+        for (const [ax, ay] of NEIGH8) {
+          const gx = nx + ax;
+          const gy = ny + ay;
+          if (gx < 0 || gx >= ow || gy < 0 || gy >= oh) continue;
+          const s = id(gx, gy);
+          if (flags[s] !== 0) continue;
+          const ddx = nx - gx;
+          const ddy = ny - gy;
+          fill(q, s, ddx * ddx + ddy * ddy);
           touched = true;
-          break;
+        }
+        if (touched && d[qi + 3] > 0) {
+          const sw = d[qi + 3];
+          d[qi] /= sw;
+          d[qi + 1] /= sw;
+          d[qi + 2] /= sw;
+          d[qi + 3] = 255;
+        }
+        if (flags[q] === 2) {
+          flags[q] = 1;
+          heap.push(q);
         }
       }
     }
-    if (!touched) break;
   }
 
   ctx.putImageData(imgData, ox0, oy0);
@@ -141,8 +275,6 @@ export interface ProcessOptions {
   video: HTMLVideoElement;
   originalDuration: number;
   region: Region;
-  /** 修复迭代次数，越大越平滑但越慢 */
-  iterations?: number;
   onProgress?: ProgressHandler;
   signal?: AbortSignal;
   mimeType?: string;
@@ -150,17 +282,15 @@ export interface ProcessOptions {
 
 /**
  * 处理主流程：把视频源帧逐帧绘制并修复水印区，用 MediaRecorder 录制。
- * 处理时视频会以正常速率播放，进度依据 currentTime / duration。
+ * 绘制与视频帧同步（requestVideoFrameCallback），避免错位重复帧。
  */
 export function processVideo(options: ProcessOptions): Promise<ProcessResult> {
   return new Promise<ProcessResult>((resolve, reject) => {
     const { video, originalDuration, region, onProgress, signal, mimeType } = options;
 
-    // 目标输出尺寸：保持源分辨率
     const outputW = video.videoWidth;
     const outputH = video.videoHeight;
 
-    // 创建离屏处理画布
     const canvas = document.createElement('canvas');
     canvas.width = outputW;
     canvas.height = outputH;
@@ -170,7 +300,6 @@ export function processVideo(options: ProcessOptions): Promise<ProcessResult> {
       return;
     }
 
-    // 计算缩放后的区域像素坐标（归一化 -> 原生像素）
     const rect: Region = {
       x: region.x * outputW,
       y: region.y * outputH,
@@ -178,7 +307,6 @@ export function processVideo(options: ProcessOptions): Promise<ProcessResult> {
       h: region.h * outputH,
     };
 
-    // 选择录制类型：优先 mp4（iOS/Safari 支持），Android/Chrome 回退 webm
     const candidates = ['video/mp4;codecs=avc1.42E01E', 'video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
     const chosen = mimeType && MediaRecorder.isTypeSupported(mimeType) ? mimeType : candidates.find(t => MediaRecorder.isTypeSupported(t));
     if (!chosen) {
@@ -188,7 +316,6 @@ export function processVideo(options: ProcessOptions): Promise<ProcessResult> {
     const ext = chosen.startsWith('video/mp4') ? '.mp4' : '.webm';
 
     const stream = canvas.captureStream(24);
-    // 尝试把源视频音频混入，若无法则静音导出
     try {
       const audioCtx = new AudioContext();
       const source = audioCtx.createMediaElementSource(video);
@@ -223,7 +350,13 @@ export function processVideo(options: ProcessOptions): Promise<ProcessResult> {
       reject(new Error('视频录制过程中发生错误，请重试'));
     };
 
+    const stopAndFinish = () => {
+      cancelAnimationFrame(raf);
+      if (recorder.state !== 'inactive') recorder.stop();
+    };
+
     let raf = 0;
+    // 与视频帧同步的绘制回调
     const paint = () => {
       if (signal?.aborted || recorder.state !== 'recording') {
         if (recorder.state !== 'inactive') recorder.stop();
@@ -234,7 +367,15 @@ export function processVideo(options: ProcessOptions): Promise<ProcessResult> {
       const t = video.currentTime;
       const progress = originalDuration > 0 ? Math.min(1, t / originalDuration) : 0;
       onProgress?.({ progress, currentTime: t, duration: originalDuration });
-      raf = requestAnimationFrame(paint);
+      requestNextFrame();
+    };
+
+    const requestNextFrame = () => {
+      if (!video.requestVideoFrameCallback) {
+        raf = requestAnimationFrame(paint);
+        return;
+      }
+      video.requestVideoFrameCallback(() => paint());
     };
 
     signal?.addEventListener('abort', () => {
@@ -250,19 +391,19 @@ export function processVideo(options: ProcessOptions): Promise<ProcessResult> {
     video.currentTime = 0;
     video.muted = true;
     video.loop = false;
-    recorder.start(250);
-    const playP = video.play();
-    if (playP) playP.catch(() => {
-      /* 自动播放被阻止时忽略，仍尝试录制首帧 */
-    });
-
-    paint();
-
     video.addEventListener('ended', function onEnd() {
       video.removeEventListener('ended', onEnd);
-      cancelAnimationFrame(raf);
-      if (recorder.state !== 'inactive') recorder.stop();
-    }, { once: false });
+      stopAndFinish();
+    });
+    recorder.start(250);
+    const playP = video.play();
+    if (playP) {
+      playP
+        .then(() => requestNextFrame())
+        .catch(() => requestNextFrame());
+    } else {
+      requestNextFrame();
+    }
   });
 }
 
