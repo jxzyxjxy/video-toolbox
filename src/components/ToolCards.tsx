@@ -41,7 +41,7 @@ export function FeaturedToolCard({ tool, onClick }: ToolCardProps) {
   );
 }
 
-/** 网格占位卡片（coming-soon / 常规） */
+/** 网格占位卡片（coming-soon / 常规）：图标 + 标题 + 状态点，紧凑两行 */
 export function GridToolCard({ tool, onClick }: ToolCardProps) {
   const Icon = tool.icon;
   const disabled = tool.status === 'coming-soon';
@@ -51,26 +51,29 @@ export function GridToolCard({ tool, onClick }: ToolCardProps) {
       onClick={() => !disabled && onClick(tool.id)}
       disabled={disabled}
       className={
-        'glass-card rise relative flex items-center gap-3 min-h-[76px] text-left px-3.5 py-3 ' +
+        'glass-card rise flex items-center gap-2.5 text-left px-3 py-3 ' +
         (disabled ? 'opacity-80 cursor-default' : 'active:scale-[0.96] transition-transform duration-150')
       }
     >
-      {disabled && (
-        <span className="absolute top-2 right-2 whitespace-nowrap text-[9px] px-1.5 py-0.5 rounded-full bg-white/10 text-[color:var(--text-3)]">
-          即将上线
-        </span>
-      )}
       <div
         className={
-          'w-10 h-10 shrink-0 rounded-xl flex items-center justify-center ' +
+          'w-9 h-9 shrink-0 rounded-xl flex items-center justify-center ' +
           (disabled ? 'text-[color:var(--text-3)] bg-white/5' : 'text-[color:var(--text-2)] bg-white/10')
         }
       >
-        {Icon ? <Icon className="w-5 h-5" /> : <span className="text-base">▧</span>}
+        {Icon ? <Icon className="w-[18px] h-[18px]" /> : <span className="text-base">▧</span>}
       </div>
       <div className="min-w-0 flex-1">
-        <h4 className="text-[13px] font-semibold whitespace-nowrap">{tool.name}</h4>
-        <p className="mt-0.5 text-[11px] leading-tight text-[color:var(--text-3)] line-clamp-2">{tool.desc}</p>
+        <h4 className="text-[13px] font-semibold whitespace-nowrap leading-tight">{tool.name}</h4>
+        <p className="mt-1 flex items-center gap-1 whitespace-nowrap text-[10px] text-[color:var(--text-3)]">
+          <span
+            className={
+              'w-1 h-1 rounded-full shrink-0 ' +
+              (disabled ? 'bg-amber-400/80' : 'bg-emerald-400/80')
+            }
+          />
+          {disabled ? '即将上线' : '已上线'}
+        </p>
       </div>
     </button>
   );
