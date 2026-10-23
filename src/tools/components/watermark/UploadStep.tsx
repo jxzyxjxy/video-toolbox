@@ -1,11 +1,15 @@
 import { useRef, useState } from 'react';
+import { LinkParser } from './LinkParser';
 
 export interface UploadedVideo {
-  file: File;
+  /** 本地上传时有值；链接解析的视频为 undefined */
+  file?: File;
   url: string;
   duration: number;
   width: number;
   height: number;
+  /** 来源名称（文件名或链接视频标题） */
+  sourceName?: string;
 }
 
 interface UploadStepProps {
@@ -56,6 +60,7 @@ export function UploadStep({ onVideoReady, onError }: UploadStepProps) {
           duration: el.duration,
           width: el.videoWidth,
           height: el.videoHeight,
+          sourceName: file.name,
         });
       } else {
         URL.revokeObjectURL(url);
@@ -122,6 +127,9 @@ export function UploadStep({ onVideoReady, onError }: UploadStepProps) {
       <p className="mt-6 text-center text-[12px] text-[color:var(--text-3)] leading-relaxed">
         已就绪后，请点击下方按钮进入下一步框选水印区域
       </p>
+
+      {/* 链接解析入口 */}
+      <LinkParser onVideoReady={onVideoReady} onError={onError} />
     </section>
   );
 }

@@ -22,16 +22,16 @@ export function FeaturedToolCard({ tool, onClick }: ToolCardProps) {
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <h3 className="text-lg font-bold">{tool.name}</h3>
-            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gradient-to-r from-[#6366f1] to-[#d946ef] text-white font-medium">
+            <h3 className="text-lg font-bold whitespace-nowrap">{tool.name}</h3>
+            <span className="shrink-0 whitespace-nowrap text-[10px] px-2 py-0.5 rounded-full bg-gradient-to-r from-[#6366f1] to-[#d946ef] text-white font-medium">
               去水印
             </span>
           </div>
-          <p className="mt-1 text-[13px] leading-snug text-[color:var(--text-2)]">
+          <p className="mt-1 text-[13px] leading-snug text-[color:var(--text-2)] line-clamp-2">
             {tool.desc}
           </p>
         </div>
-        <div className="text-[color:var(--text-3)]">
+        <div className="shrink-0 text-[color:var(--text-3)]">
           <svg viewBox="0 0 24 24" className="w-6 h-6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="m9 18 6-6-6-6" />
           </svg>
@@ -51,26 +51,26 @@ export function GridToolCard({ tool, onClick }: ToolCardProps) {
       onClick={() => !disabled && onClick(tool.id)}
       disabled={disabled}
       className={
-        'glass-card rise relative flex flex-col items-center justify-center gap-3 aspect-square text-center px-3 ' +
+        'glass-card rise relative flex flex-col items-center justify-center gap-2.5 min-h-[148px] text-center px-3 py-4 ' +
         (disabled ? 'opacity-80 cursor-default' : 'active:scale-[0.96] transition-transform duration-150')
       }
     >
       {disabled && (
-        <span className="absolute top-2.5 right-2.5 text-[9px] px-1.5 py-0.5 rounded-full bg-white/10 text-[color:var(--text-3)]">
+        <span className="absolute top-2 right-2 whitespace-nowrap text-[9px] px-1.5 py-0.5 rounded-full bg-white/10 text-[color:var(--text-3)]">
           即将上线
         </span>
       )}
       <div
         className={
-          'w-12 h-12 rounded-2xl flex items-center justify-center ' +
+          'w-11 h-11 shrink-0 rounded-2xl flex items-center justify-center ' +
           (disabled ? 'text-[color:var(--text-3)] bg-white/5' : 'text-[color:var(--text-2)] bg-white/10')
         }
       >
         {Icon ? <Icon className="w-6 h-6" /> : <span className="text-lg">▧</span>}
       </div>
-      <div>
-        <h4 className="text-sm font-semibold">{tool.name}</h4>
-        <p className="mt-0.5 text-[11px] leading-tight text-[color:var(--text-3)]">{tool.desc}</p>
+      <div className="w-full">
+        <h4 className="text-sm font-semibold whitespace-nowrap">{tool.name}</h4>
+        <p className="mt-0.5 text-[11px] leading-tight text-[color:var(--text-3)] line-clamp-2">{tool.desc}</p>
       </div>
     </button>
   );

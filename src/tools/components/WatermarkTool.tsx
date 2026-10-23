@@ -135,6 +135,18 @@ export function WatermarkTool() {
       {/* 框选 */}
       {step === 'select' && video && (
         <section className="rise mt-4">
+          {!video.file && (
+            <div className="glass-card mb-3 px-4 py-2.5 flex items-center gap-2.5">
+              <span className="w-5 h-5 rounded-full bg-amber-500/20 text-amber-300 flex items-center justify-center shrink-0">
+                <svg viewBox="0 0 24 24" className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 9v4m0 4h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                </svg>
+              </span>
+              <p className="text-[12px] leading-snug text-[color:var(--text-2)]">
+                已加载链接视频{video.sourceName ? `（${video.sourceName}）` : ''}，水印为画面烧录，请框选后修复
+              </p>
+            </div>
+          )}
           <SelectStep video={video} region={region} onChange={setRegion} />
           <div className="mt-4 grid grid-cols-2 gap-3">
             <button
@@ -154,7 +166,7 @@ export function WatermarkTool() {
             </button>
           </div>
           <p className="mt-3 text-center text-[11px] text-[color:var(--text-3)]">
-            处理全程在本地完成，视频不会上传到服务器
+            {video.file ? '处理全程在本地完成，视频不会上传到服务器' : '修复处理全程在本地完成，服务器仅做视频转发不存储'}
           </p>
         </section>
       )}
