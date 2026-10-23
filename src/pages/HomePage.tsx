@@ -40,7 +40,7 @@ export function HomePage({ navigate }: HomePageProps) {
         <h2 className="text-[13px] font-semibold mb-3 text-[color:var(--text-2)] tracking-wide uppercase">
           更多工具
         </h2>
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 gap-3">
           {coming.map(t => (
             <GridToolCard key={t.id} tool={t} onClick={openTool} variant="grid" />
           ))}

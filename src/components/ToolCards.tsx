@@ -51,7 +51,7 @@ export function GridToolCard({ tool, onClick }: ToolCardProps) {
       onClick={() => !disabled && onClick(tool.id)}
       disabled={disabled}
       className={
-        'glass-card rise relative flex flex-col items-center justify-center gap-2.5 min-h-[148px] text-center px-3 py-4 ' +
+        'glass-card rise relative flex items-center gap-3 min-h-[76px] text-left px-3.5 py-3 ' +
         (disabled ? 'opacity-80 cursor-default' : 'active:scale-[0.96] transition-transform duration-150')
       }
     >
@@ -62,14 +62,14 @@ export function GridToolCard({ tool, onClick }: ToolCardProps) {
       )}
       <div
         className={
-          'w-11 h-11 shrink-0 rounded-2xl flex items-center justify-center ' +
+          'w-10 h-10 shrink-0 rounded-xl flex items-center justify-center ' +
           (disabled ? 'text-[color:var(--text-3)] bg-white/5' : 'text-[color:var(--text-2)] bg-white/10')
         }
       >
-        {Icon ? <Icon className="w-6 h-6" /> : <span className="text-lg">▧</span>}
+        {Icon ? <Icon className="w-5 h-5" /> : <span className="text-base">▧</span>}
       </div>
-      <div className="w-full">
-        <h4 className="text-sm font-semibold whitespace-nowrap">{tool.name}</h4>
+      <div className="min-w-0 flex-1">
+        <h4 className="text-[13px] font-semibold whitespace-nowrap">{tool.name}</h4>
         <p className="mt-0.5 text-[11px] leading-tight text-[color:var(--text-3)] line-clamp-2">{tool.desc}</p>
       </div>
     </button>

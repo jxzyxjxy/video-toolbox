@@ -105,8 +105,8 @@ export function UploadStep({ onVideoReady, onError }: UploadStepProps) {
         <p className="mt-1 text-[12px] text-[color:var(--text-3)]">
           支持 MP4 / MOV / WebM / AVI，单文件 ≤100MB
         </p>
-        <p className="mt-3 text-[11px] px-3 py-1 rounded-full bg-white/10 text-[color:var(--text-2)]">
-          支持从相册或文件选择，全程本地处理不上传
+        <p className="mt-3 text-[11px] px-3 py-1 rounded-full bg-white/10 text-[color:var(--text-2)] whitespace-nowrap">
+          相册/文件选择 · 本地处理不上传
         </p>
       </button>
 
